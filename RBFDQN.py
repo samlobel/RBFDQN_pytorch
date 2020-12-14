@@ -100,6 +100,7 @@ class Net(nn.Module):
 			    utils_for_q_learning.Reshape(-1, self.N, self.action_size),
 			    nn.Tanh(),
 			)
+		
 
 		torch.nn.init.xavier_uniform_(self.location_module[0].weight)
 		torch.nn.init.zeros_(self.location_module[0].bias)
@@ -107,15 +108,29 @@ class Net(nn.Module):
 		self.location_module[3].weight.data.uniform_(-.1, .1)
 		self.location_module[3].bias.data.uniform_(-1., 1.)
 
+		self.latent_action_module = nn.Sequential(
+			nn.Linear(self.state_size + self.action_size, self.params['layer_size_action_side']),
+			nn.Dropout(p=self.params['dropout_rate']),
+			nn.ReLU(),
+			nn.Linear(self.params['layer_size_action_side'], self.params['latent_dim_size']),
+		)
+
+
 		self.criterion = nn.MSELoss()
 
-		self.params_dic = [{
-		    'params': self.value_module.parameters(), 'lr': self.params['learning_rate']
-		},
-		                   {
-		                       'params': self.location_module.parameters(),
-		                       'lr': self.params['learning_rate_location_side']
-		                   }]
+		self.params_dic = [
+			{
+				'params': self.value_module.parameters(), 'lr': self.params['learning_rate']
+			},
+			{
+				'params': self.location_module.parameters(),
+				'lr': self.params['learning_rate_location_side']
+			},
+			{
+				'params': self.latent_action_module.parameters(),
+				'lr': self.params['learning_rate_location_side']
+			},
+		]
 		try:
 			if self.params['optimizer'] == 'RMSprop':
 				self.optimizer = optim.RMSprop(self.params_dic)
@@ -128,6 +143,45 @@ class Net(nn.Module):
 
 
 		self.to(self.device)
+
+	def _collate_state_actions(self, states, actions):
+		'''
+		Description:
+			Collates states and actions.
+			If there are many centroids per state:
+				Copies the state so that there is one copy for each centroid,
+				and then smooshes them together.
+			If there is one action per state:
+				Just concatenates them
+			Single function for both cases for easier use downstream.
+		Arguments:
+			states: [batch x state_dim]
+			actions: [batch x N x action_dim]
+				  OR [batch x action_dom]
+
+		Returns:
+			tensor: [batch x n x (state_dim + action_dim)]
+				 OR [batch x (state_dim + action_dim)]
+		'''
+		
+		assert states.shape[0] == actions.shape[0]
+		assert len(states.shape) == 2
+		assert len(actions.shape) in (2,3)
+
+		if len(actions.shape) == 2: # One action per state
+			sa_collated = torch.cat((states, actions), dim=1)
+			assert sa_collated.shape == (states.shape[0], states.shape[1]+actions.shape[1])
+			return sa_collated
+		
+		# more than one action per state.
+		num_centroids = actions.shape[1]
+		new_states = states.unsqueeze(1).expand(-1, num_centroids, -1)
+		assert new_states.shape[1] == actions.shape[1]
+		assert new_states.shape == (states.shape[0], actions.shape[1], states.shape[1])
+
+		sa_collated = torch.cat((new_states, actions), dim=2)
+		assert sa_collated.shape == (states.shape[0], actions.shape[1], states.shape[1]+actions.shape[2])
+		return sa_collated
 
 	def get_centroid_values(self, s):
 		'''
@@ -142,14 +196,26 @@ class Net(nn.Module):
 		'''
 		centroid_locations = self.max_a * self.location_module(s)
 		return centroid_locations
+	
+	def get_latent_action_locations(self, states, actions):
+		"""
+		Takes in states and the centroid actions, collates them,
+		and passes it through the transformation network.
+		actions can be one action per state (batch, action_dim),
+		or many actions per state (batch, N, action_dim).
+		"""
+		sa_collated = self._collate_state_actions(states, actions)
+		latent_centroids = self.latent_action_module(sa_collated)
+		return latent_centroids
 
 	def get_best_qvalue_and_action(self, s):
 		'''
 		given a batch of states s, return Q(s,a), max_{a} ([batch x 1], [batch x a_dim])
-		'''
+  		'''
 		all_centroids = self.get_centroid_locations(s)
+		all_latent_centroids = self.get_latent_action_locations(s, all_centroids)
 		values = self.get_centroid_values(s)
-		weights = rbf_function(all_centroids, all_centroids, self.beta)  # [batch x N x N]
+		weights = rbf_function(all_latent_centroids, all_latent_centroids, self.beta)  # [batch x N x N]
 		allq = torch.bmm(weights, values.unsqueeze(2)).squeeze(2)  # bs x num_centroids
 		# a -> all_centroids[idx] such that idx is max(dim=1) in allq
 		# a = torch.gather(all_centroids, dim=1, index=indices)
@@ -168,8 +234,16 @@ class Net(nn.Module):
 		'''
 		centroid_values = self.get_centroid_values(s)  # [batch_dim x N]
 		centroid_locations = self.get_centroid_locations(s)
+		latent_centroid_locations = self.get_latent_action_locations(s, centroid_locations)
+
+		# latent action requires some reshaping, because the collate function expects
+		# many centroids per state?
+		assert len(a.shape) == 2
+		assert a.shape[1] == self.action_size
+		latent_action_locations = self.get_latent_action_locations(s, a)
+
 		# [batch x N]
-		centroid_weights = rbf_function_on_action(centroid_locations, a, self.beta)
+		centroid_weights = rbf_function_on_action(latent_centroid_locations, latent_action_locations, self.beta)
 		output = torch.mul(centroid_weights, centroid_values)  # [batch x N]
 		output = output.sum(1, keepdim=True)  # [batch x 1]
 		return output
