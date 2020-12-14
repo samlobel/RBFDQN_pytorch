@@ -21,3 +21,4 @@ optimizer,RMSprop,string
 policy_type,gaussian,string
 noise,0.25,float
 latent_dim_size,1,integer
+use_latent_rbfdqn,True,boolean

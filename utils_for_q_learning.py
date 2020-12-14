@@ -29,6 +29,10 @@ def get_hyper_parameters(name, alg):
 				meta_params[parameter_name] = int(parameter_value)
 			elif parameter_type == 'float':
 				meta_params[parameter_name] = float(parameter_value)
+			elif parameter_type == 'boolean':
+				assert parameter_value.lower() in ['true', 'false'], f"got value '{parameter_value.lower()}' for {parameter_name}. Expected either true or false."
+				meta_params[parameter_name] = True if parameter_value.lower() == 'true' else False
+				print(f"Set {parameter_name} to {meta_params[parameter_name]} (type {type(meta_params[parameter_name])})")
 			else:
 				print("unknown parameter type ... aborting")
 				print(l)

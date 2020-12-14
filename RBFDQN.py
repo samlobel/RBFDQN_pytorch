@@ -62,6 +62,9 @@ class Net(nn.Module):
 		self.max_a = self.env.action_space.high[0]
 		self.beta = self.params['temperature']
 
+		# Defaults to False (standard RBFDQN behavior)
+		self.use_latent_rbfdqn = self.params.get('use_latent_rbfdqn', False)
+
 		self.buffer_object = buffer_class.buffer_class(
 		    max_length=self.params['max_buffer_size'],
 		    env=self.env,
@@ -108,12 +111,13 @@ class Net(nn.Module):
 		self.location_module[3].weight.data.uniform_(-.1, .1)
 		self.location_module[3].bias.data.uniform_(-1., 1.)
 
-		self.latent_action_module = nn.Sequential(
-			nn.Linear(self.state_size + self.action_size, self.params['layer_size_action_side']),
-			nn.Dropout(p=self.params['dropout_rate']),
-			nn.ReLU(),
-			nn.Linear(self.params['layer_size_action_side'], self.params['latent_dim_size']),
-		)
+		if self.use_latent_rbfdqn:
+			self.latent_action_module = nn.Sequential(
+				nn.Linear(self.state_size + self.action_size, self.params['layer_size_action_side']),
+				nn.Dropout(p=self.params['dropout_rate']),
+				nn.ReLU(),
+				nn.Linear(self.params['layer_size_action_side'], self.params['latent_dim_size']),
+			)
 
 
 		self.criterion = nn.MSELoss()
@@ -126,11 +130,12 @@ class Net(nn.Module):
 				'params': self.location_module.parameters(),
 				'lr': self.params['learning_rate_location_side']
 			},
-			{
+		]
+		if self.use_latent_rbfdqn:
+			self.params_dic.append({
 				'params': self.latent_action_module.parameters(),
 				'lr': self.params['learning_rate_location_side']
-			},
-		]
+			})
 		try:
 			if self.params['optimizer'] == 'RMSprop':
 				self.optimizer = optim.RMSprop(self.params_dic)
@@ -213,9 +218,14 @@ class Net(nn.Module):
 		given a batch of states s, return Q(s,a), max_{a} ([batch x 1], [batch x a_dim])
   		'''
 		all_centroids = self.get_centroid_locations(s)
-		all_latent_centroids = self.get_latent_action_locations(s, all_centroids)
 		values = self.get_centroid_values(s)
-		weights = rbf_function(all_latent_centroids, all_latent_centroids, self.beta)  # [batch x N x N]
+
+		if self.use_latent_rbfdqn:
+			all_latent_centroids = self.get_latent_action_locations(s, all_centroids)
+			weights = rbf_function(all_latent_centroids, all_latent_centroids, self.beta)  # [batch x N x N]
+		else:
+			weights = rbf_function(all_centroids, all_centroids, self.beta)
+
 		allq = torch.bmm(weights, values.unsqueeze(2)).squeeze(2)  # bs x num_centroids
 		# a -> all_centroids[idx] such that idx is max(dim=1) in allq
 		# a = torch.gather(all_centroids, dim=1, index=indices)
@@ -234,16 +244,20 @@ class Net(nn.Module):
 		'''
 		centroid_values = self.get_centroid_values(s)  # [batch_dim x N]
 		centroid_locations = self.get_centroid_locations(s)
-		latent_centroid_locations = self.get_latent_action_locations(s, centroid_locations)
 
 		# latent action requires some reshaping, because the collate function expects
 		# many centroids per state?
 		assert len(a.shape) == 2
 		assert a.shape[1] == self.action_size
-		latent_action_locations = self.get_latent_action_locations(s, a)
+
+		if self.use_latent_rbfdqn:
+			latent_centroid_locations = self.get_latent_action_locations(s, centroid_locations)
+			latent_action_locations = self.get_latent_action_locations(s, a)
+			centroid_weights = rbf_function_on_action(latent_centroid_locations, latent_action_locations, self.beta)
+		else:
+			centroid_weights = rbf_function_on_action(centroid_locations, a, self.beta)
 
 		# [batch x N]
-		centroid_weights = rbf_function_on_action(latent_centroid_locations, latent_action_locations, self.beta)
 		output = torch.mul(centroid_weights, centroid_values)  # [batch x N]
 		output = output.sum(1, keepdim=True)  # [batch x 1]
 		return output

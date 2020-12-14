@@ -10,7 +10,7 @@ target_network_learning_rate,0.005,float
 max_buffer_size,500000,integer
 gamma,0.99,float
 batch_size,256,integer
-num_points,2,integer
+num_points,10,integer
 reward_clip,20,float
 temperature,2,float
 policy_parameter,2.75,float
@@ -19,5 +19,5 @@ updates_per_episode,1000,integer
 dropout_rate,0.4,float
 optimizer,RMSprop,string
 policy_type,e_greedy,string
-latent_dim_size,1,integer
+latent_dim_size,2,integer
 use_latent_rbfdqn,True,boolean
