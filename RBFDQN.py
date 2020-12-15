@@ -352,6 +352,7 @@ class Net(nn.Module):
 
 
 if __name__ == '__main__':
+	print(f"Running hyper file {sys.argv[1]}, seed {sys.argv[2]}")
 	if torch.cuda.is_available():
 		device = torch.device("cuda")
 		print("Running on the GPU")
